@@ -114,3 +114,6 @@ MUJOCO_LOG.TXT
 
 # docs site: local inspection copy (browser uses pybundle.tar.gz instead)
 docs/pysrc/
+
+# dataset
+*.npz
