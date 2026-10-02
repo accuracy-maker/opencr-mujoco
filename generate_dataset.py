@@ -113,21 +113,22 @@ def get_joint_sampling_limits(
 
 def get_tip_pose(model, data):
     """
-    Return TDCR tip pose in the world frame.
-
-    Output:
-        [px, py, pz, qw, qx, qy, qz]
+    Return:
+        [px, py, pz, R00, R01, R10, R11, R20, R21]
     """
 
     tip_body = data.body("EE_pos")
 
     position = tip_body.xpos.copy()
 
-    # MuJoCo quaternion convention: [w, x, y, z].
-    quaternion_wxyz = tip_body.xquat.copy()
+    # MuJoCo xmat is a flattened 3x3 rotation matrix.
+    rotation = tip_body.xmat.reshape(3, 3)
+
+    # First two columns of R.
+    rotation_6d = rotation[:, :2].reshape(-1)
 
     return np.concatenate(
-        [position, quaternion_wxyz]
+        [position, rotation_6d]
     )
 
 
@@ -332,15 +333,12 @@ def main():
         dtype=np.float64,
     )
 
-    # x = [px, py, pz, qw, qx, qy, qz].
+    # x = [px, py, pz, R00, R01, R10, R11, R20, R21].
+    # mainly aim to match with my other workflows
     x_dataset = np.zeros(
-        (
-            args.num_samples,
-            7,
-        ),
+        (args.num_samples, 9),
         dtype=np.float64,
     )
-
     neutral_qpos = data.qpos.copy()
 
     for sample_id in tqdm(range(args.num_samples), desc="Generating dataset"):
@@ -362,25 +360,22 @@ def main():
             data,
         )
 
-    np.savez_compressed(
-        args.output,
-        q=q_dataset,
-        x=x_dataset,
-        q_joint_names=np.asarray(
-            joint_names
-        ),
-        pose_convention=np.asarray(
-            [
-                "px",
-                "py",
-                "pz",
-                "qw",
-                "qx",
-                "qy",
-                "qz",
-            ]
-        ),
+    x_max = x_dataset[:, :3].max(axis=0)
+
+    print(
+        f"x_max [m] = "
+        f"[{x_max[0]:.6f}, "
+        f"{x_max[1]:.6f}, "
+        f"{x_max[2]:.6f}]"
     )
+
+    np.savez(
+        args.output,
+        qs=q_dataset,
+        xs=x_dataset,
+    )
+
+    print(f"Saved {len(q_dataset)} samples to {args.output}")
 
     plot_workspace(
         x_dataset=x_dataset,
