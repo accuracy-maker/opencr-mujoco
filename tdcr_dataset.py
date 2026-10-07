@@ -1,6 +1,20 @@
+"""
+Generate dataset in Clarke Coordinate for TDCR robot
+
+1. generate the xml model file
+2. read the xml model file
+3. random genearte the configs
+4. only accept configs within tendon limits
+5. compute the tip's pose
+6. save the (q, x) pairs
+"""
+
 import re
+import math
 import argparse
 from pathlib import Path
+from tqdm import tqdm
+import matplotlib.pyplot as plt
 
 import mujoco
 import numpy as np
@@ -99,24 +113,101 @@ def read_pretension_keyframe(model):
         raise RuntimeError("The XML does not contain a 'pretension' keyframe")
     return key_id, model.key_ctrl[key_id].copy()
 
+
+# sample Clarke configs
+def sample_clarke(rng, radii_mm):
+	q = np.zeros(2 * radii_mm.size, dtype=float)
+	for segment, radius in enumerate(radii_mm):
+		magnitude = radius * math.sqrt(float(rng.random()))
+		angle = 2.0 * math.pi * float(rng.random())
+		q[2 * segment : 2 * segment + 2] = magnitude * np.array(
+		    [math.cos(angle), math.sin(angle)]
+		)
+	return q	
+
+def check_control_limits(model, actuator_ids, control, tolerance=1e-10):
+	limited = np.asarray(model.actuator_ctrllimited, dtype=bool)
+	ranges = np.asarray(model.actuator_ctrlrange, dtype=float)
+
+	for actuator_id in actuator_ids:
+		if not limited[actuator_id]:
+		    continue
+		lower, upper = ranges[actuator_id]
+		value = control[actuator_id]
+		if value < lower - tolerance or value > upper + tolerance:
+	            return False
+	return True
+
+def plot_positions(positions):
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection="3d")
+
+    for sample_id in range(positions.shape[0]):
+        sample_positions = positions[sample_id]
+
+        ax.plot(
+            sample_positions[:, 0],
+            sample_positions[:, 1],
+            sample_positions[:, 2],
+            "-o",
+            linewidth=1.2,
+            markersize=2,
+            alpha=0.7,
+        )
+
+    ax.scatter(
+        positions[:, 0, 0],
+        positions[:, 0, 1],
+        positions[:, 0, 2],
+        color="green",
+        s=30,
+        label="Base",
+    )
+
+    ax.scatter(
+        positions[:, -1, 0],
+        positions[:, -1, 1],
+        positions[:, -1, 2],
+        color="red",
+        s=30,
+        label="Tip",
+    )
+
+    ax.set_xlabel("x [m]")
+    ax.set_ylabel("y [m]")
+    ax.set_zlabel("z [m]")
+    ax.set_title("TDCR Skeletons")
+    ax.legend()
+    ax.set_box_aspect((1, 1, 1))
+
+    plt.show()
+
+def get_body_ids(model):
+    body_ids = []
+
+    for body_id in range(1, model.nbody):
+        body_name = mujoco.mj_id2name(
+            model,
+            mujoco.mjtObj.mjOBJ_BODY,
+            body_id)
+        # print(body_name)
+        if body_name:
+            body_ids.append(body_id)
+    body_ids.sort()
+    return body_ids
+
+MAX_BENDING_ANGLE_RAD = np.pi / 3
+NUM_SAMPLES = 10000
+
 xml_path = "assets/tdcr/ftdcr_v4_sysid.xml"
 model = mujoco.MjModel.from_xml_path(xml_path)
 data = mujoco.MjData(model)
 
 actuator_ids, tendons_per_segment = find_tendon_actuators(model)
 
-print(f"length of actuator_ids: {len(actuator_ids)}\n"
-    f"length of tendons per segment: {len(tendons_per_segment)}")
-
-print(f"actuator_ids:\n {actuator_ids}\n",
-    f"tendons per segment:\n {tendons_per_segment}")
-
 n_segments = len(tendons_per_segment)
 
 distances, offsets = infer_geometry(xml_path, n_segments)
-
-print(f"inferred distances: {distances}\n",
-    f"inferred offsets: {offsets}")
 
 if len(distances) == 1:
     distances = list(distances) * n_segments
@@ -128,48 +219,55 @@ if len(distances) != n_segments or len(offsets) != n_segments:
         "one value or one value per segment"
     )
 
-key_id, pretension_ctrl = read_pretension_keyframe(model)
-print(f"key id: {key_id}\n",
-    f"pretension_ctrl is:\n {pretension_ctrl}")
+distances = np.asarray(distances, dtype=float)
+offsets = np.asarray(offsets, dtype=float)
+print(f"distances: {distances}")
+radii_mm = distances * MAX_BENDING_ANGLE_RAD
+
+print(f"radii_mm: {radii_mm}")
 
 kin = MultiSegmentTDCRKinematics(
     n_tendons_per_segment=tendons_per_segment,
     tendon_distances_mm=distances,
     angle_offsets_rad_ccw=offsets,
+    max_bending_angles_rad = MAX_BENDING_ANGLE_RAD
 )
 
-mujoco.mj_resetDataKeyframe(model, data, key_id)
-mujoco.mj_forward(model, data)
+key_id, pretension_ctrl = read_pretension_keyframe(model)
 
-q = np.array([0, 2, 0, 0, 0, 0])
-
-delta_tendon_m = kin.clark_to_tendons_mm(q) * 1e-3
-print(f"delta_tendon_m: {delta_tendon_m}")
-
-data.ctrl[:] = pretension_ctrl
-for actuator_id, delta in zip(actuator_ids, delta_tendon_m):
-    data.ctrl[actuator_id] = pretension_ctrl[actuator_id] + delta
+rng = np.random.default_rng(42)
 
 settle_steps = max(1, int(round(1.0 / model.opt.timestep)))
-print(f"settle_steps: {settle_steps}")
-
-for _ in range(settle_steps):
-    mujoco.mj_step(model, data)
 
 tip_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "EE_pos")
-print(f"tip id: {tip_id}")
 
-position = data.xpos[tip_id].copy()
-quaternion = data.xquat[tip_id].copy()
-print(f"position:\n {position}\n",
-    f"quaternion:\n {quaternion}")
+body_ids = get_body_ids(model)
 
-R = Rotation.from_quat(
-    [
-        quaternion[1],
-        quaternion[2],
-        quaternion[3],
-        quaternion[0],
-    ])
+positions = []
 
-print(f"rotation matrix is:\n {R}")
+for i in tqdm(range(NUM_SAMPLES), desc="generating"):
+    q = sample_clarke(rng, radii_mm)
+    delta_tendons_m = kin.clark_to_tendons_mm(q) * 1e-3
+    requested_ctrl = pretension_ctrl.copy()
+    for actuator_id, delta in zip(actuator_ids, delta_tendons_m):
+    	requested_ctrl[actuator_id] += delta
+
+    if not check_control_limits(model, actuator_ids, requested_ctrl):
+        print(f"sample: {i+1} rejected | reason: out of tendon limits")
+        continue
+
+    mujoco.mj_resetDataKeyframe(model, data, key_id)
+    data.ctrl[:] = pretension_ctrl
+    for actuator_id, delta in zip(actuator_ids, delta_tendons_m):
+    	data.ctrl[actuator_id] = pretension_ctrl[actuator_id] + delta
+    mujoco.mj_forward(model, data)
+
+    for _ in range(settle_steps):
+    	mujoco.mj_step(model, data)
+
+    positions.append(np.array([data.xpos[body_id] for body_id in body_ids]))
+
+positions = np.asarray(positions)
+print(f"positions shape: {positions.shape}")
+
+# plot_positions(positions)
