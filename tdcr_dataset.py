@@ -197,7 +197,7 @@ def get_body_ids(model):
     return body_ids
 
 MAX_BENDING_ANGLE_RAD = np.pi / 3
-NUM_SAMPLES = 10000
+NUM_SAMPLES = 100000
 
 xml_path = "assets/tdcr/ftdcr_v4_sysid.xml"
 model = mujoco.MjModel.from_xml_path(xml_path)
