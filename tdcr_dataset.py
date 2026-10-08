@@ -196,8 +196,11 @@ def get_body_ids(model):
     body_ids.sort()
     return body_ids
 
+ROOT_PATH = Path(__file__).resolve().parents[1]
+# print(f"ROOT PATH: {ROOT_PATH}")
+
 MAX_BENDING_ANGLE_RAD = np.pi / 3
-NUM_SAMPLES = 10000
+NUM_SAMPLES = 10
 
 xml_path = "assets/tdcr/ftdcr_v4_sysid.xml"
 model = mujoco.MjModel.from_xml_path(xml_path)
@@ -244,6 +247,7 @@ tip_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "EE_pos")
 body_ids = get_body_ids(model)
 
 positions = []
+qs = []
 
 for i in tqdm(range(NUM_SAMPLES), desc="generating"):
     q = sample_clarke(rng, radii_mm)
@@ -265,9 +269,16 @@ for i in tqdm(range(NUM_SAMPLES), desc="generating"):
     for _ in range(settle_steps):
     	mujoco.mj_step(model, data)
 
+    qs.append(q)
     positions.append(np.array([data.xpos[body_id] for body_id in body_ids]))
 
+qs = np.asarray(qs)
 positions = np.asarray(positions)
+print(f"qs shape: {qs.shape}")
 print(f"positions shape: {positions.shape}")
 
+# save it as npz file
+output_path = Path(ROOT_PATH, "tdcr", "tdcr_position_dataset.npz")
+np.savez(output_path, qs=qs, xs=positions)
+print(f"save dataset to the path: {output_path}")
 # plot_positions(positions)
