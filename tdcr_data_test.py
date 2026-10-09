@@ -1,6 +1,7 @@
 import re
 import argparse
 from pathlib import Path
+import math
 
 import mujoco
 import numpy as np
@@ -50,42 +51,33 @@ def find_tendon_actuators(model):
     return actuator_ids, tendons_per_segment
 
 def infer_geometry(xml_path, n_segments):
-    """infer geometry from a generated XML"""
-    try:
-        from generate import tdcr_geometry_from_scene
+    from generate import tdcr_geometry_from_scene
 
-        geometry = tdcr_geometry_from_scene(xml_path)
-    except Exception:
-        geometry = {}
+    xml_path = Path(xml_path).resolve()
 
-    distances = geometry.get("tendon_distance_mm")
-    offsets = geometry.get("angle_offset_rad_ccw")
+    #print(f"Using generate.py from: {Path(__file__).resolve().parent}")
+    #print(f"XML path: {xml_path}")
 
-    if distances is None:
-        distances = [4.0] * n_segments
-        print(
-            "Warning: tendon distance was not inferred; using 4.0 mm. "
-            "Pass --tendon-distance-mm explicitly for another robot."
+    geometry = tdcr_geometry_from_scene(xml_path)
+
+    print(f"Geometry returned by generate.py: {geometry}")
+
+    if not geometry:
+        raise RuntimeError(
+            "Could not infer geometry. Check that "
+            "configs/generation/ftdcr_v4_sysid.json exists and that "
+            "generate.py contains tdcr_geometry_from_scene()."
         )
-    elif np.isscalar(distances):
+
+    distances = geometry["tendon_distance_mm"]
+    offsets = geometry["angle_offset_rad_ccw"]
+
+    if np.isscalar(distances):
         distances = [float(distances)] * n_segments
     else:
         distances = [float(value) for value in distances]
 
-    if offsets is None: 
-        offsets = [segment * math.pi / 6.0 for segment in range(n_segments)]
-        print(
-            "Warning: tendon angle offsets were not inferred; using "
-            "[0, pi/6, ...]. Pass --angle-offset-rad explicitly if needed."
-        )
-    else:
-        offsets = [float(value) for value in offsets]
-
-    if len(distances) != n_segments or len(offsets) != n_segments:
-        raise ValueError(
-            "The number of tendon distances and angle offsets must match "
-            f"the detected number of segments ({n_segments})"
-        )
+    offsets = [float(value) for value in offsets]
 
     return distances, offsets
 
